@@ -1,0 +1,5 @@
+.env
+**/daa-sdk/
+__pycache__/
+*.pyc
+.pytest_cache/

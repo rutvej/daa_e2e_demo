@@ -4,7 +4,9 @@ import os
 
 logging.basicConfig(level=logging.INFO)
 
+from daa_sdk import DaaSdk
 app = Flask(__name__)
+daa_sdk = DaaSdk(backend_url=os.environ.get('DAA_BACKEND_API_URL'))
 
 @app.route("/")
 def hello_world():
@@ -24,6 +26,7 @@ def attribute_error():
         return my_obj.farewell()
     except Exception as e:
         logging.error("AttributeError occurred", exc_info=True)
+        daa_sdk.capture_exception(e)
         return jsonify({"error": "Internal Server Error"}), 500
 
 @app.route("/import-error")
@@ -32,6 +35,7 @@ def import_error():
         import non_existent_module
     except Exception as e:
         logging.error("ImportError occurred", exc_info=True)
+        daa_sdk.capture_exception(e)
         return jsonify({"error": "Internal Server Error"}), 500
 
 @app.route("/index-error")
@@ -41,6 +45,7 @@ def index_error():
         return str(my_list[3])
     except Exception as e:
         logging.error("IndexError occurred", exc_info=True)
+        daa_sdk.capture_exception(e)
         return jsonify({"error": "Internal Server Error"}), 500
 
 @app.route("/name-error")
@@ -49,6 +54,7 @@ def name_error():
         return non_existent_variable
     except Exception as e:
         logging.error("NameError occurred", exc_info=True)
+        daa_sdk.capture_exception(e)
         return jsonify({"error": "Internal Server Error"}), 500
 
 @app.route("/recursion-error")
@@ -59,6 +65,7 @@ def recursion_error():
         recursive_function()
     except Exception as e:
         logging.error("RecursionError occurred", exc_info=True)
+        daa_sdk.capture_exception(e)
         return jsonify({"error": "Internal Server Error"}), 500
 
 @app.route("/new-error", methods=['POST'])
@@ -100,6 +107,7 @@ def key_error():
         return my_dict["age"]
     except Exception as e:
         logging.error("KeyError occurred", exc_info=True)
+        daa_sdk.capture_exception(e)
         return jsonify({"error": "Internal Server Error"}), 500
 
 @app.route("/type-error")
@@ -109,6 +117,7 @@ def type_error():
         return str(result)
     except Exception as e:
         logging.error("TypeError occurred", exc_info=True)
+        daa_sdk.capture_exception(e)
         return jsonify({"error": "Internal Server Error"}), 500
 
 @app.route("/value-error")
@@ -117,4 +126,5 @@ def value_error():
         int("hello")
     except Exception as e:
         logging.error("ValueError occurred", exc_info=True)
+        daa_sdk.capture_exception(e)
         return jsonify({"error": "Internal Server Error"}), 500

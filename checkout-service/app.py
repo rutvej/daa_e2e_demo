@@ -6,6 +6,23 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 app = FastAPI(title="Mock Checkout Service", version="1.0.0")
+DAA_LOGS_URL = os.environ.get("DAA_LOGS_URL")
+DAA_TOKEN = os.environ.get("DAA_TOKEN")
+def report_error_to_daa(exception_type: str, content: str, trace_id: str):
+    if not DAA_LOGS_URL or not DAA_TOKEN:
+        return
+    payload = {
+        "app_name": "checkout-service",
+        "content": content,
+        "exception_type": exception_type,
+        "trace_id": trace_id,
+        "correlation_id": str(uuid.uuid4())
+    }
+    headers = {"Authorization": f"Bearer {DAA_TOKEN}"}
+    try:
+        requests.post(DAA_LOGS_URL, json=payload, headers=headers, timeout=2.0)
+    except Exception as e:
+        print(f"Failed to report to DAA: {e}")
 
 PAYMENT_SERVICE_URL = os.environ.get("PAYMENT_SERVICE_URL", "http://localhost:8002/pay")
 REDIS_HOST = os.environ.get("REDIS_HOST", "redis-cache")
@@ -33,8 +50,12 @@ def process_checkout(req: CheckoutRequest):
     # 1. Simulate Redis connection check
     if "fail_redis" in req.user_id:
         cache = RedisCache()
-        # Buggy line to be fixed by SRE agent:
-        cache.connec()
+        try:
+            # Buggy line to be fixed by SRE agent:
+            cache.connec()
+        except Exception as e:
+            report_error_to_daa("AttributeError", str(e), trace_id)
+            raise
 
     # 2. Simulate call to downstream Payment Service
     try:
