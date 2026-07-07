@@ -1,0 +1,88 @@
+version: '3.8'
+
+volumes:
+  gitlab_config:
+  gitlab_logs:
+  gitlab_data:
+
+services:
+  gitlab:
+    image: 'gitlab/gitlab-ce:latest'
+    restart: always
+    hostname: 'gitlab.example.com'
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://gitlab.example.com'
+        gitlab_rails['initial_root_password'] = "StrongPassword123"
+    ports:
+      - '8082:80'
+      - '8443:443'
+      - '2224:22'
+    volumes:
+      - 'gitlab_config:/etc/gitlab'
+      - 'gitlab_logs:/var/log/gitlab'
+      - 'gitlab_data:/var/opt/gitlab'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/-/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  redis-cache:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  test-app:
+    build:
+      context: ./test-app
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "8081:8081"
+    environment:
+      - DAA_BACKEND_API_URL=http://host.docker.internal:8000
+      - DAA_LOGS_URL=http://host.docker.internal:8000/logs/
+      - DAA_TOKEN=${DAA_TOKEN_TEST_APP}
+      - REPO_NAME=test-app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "gitlab.example.com:host-gateway"
+
+  checkout-service:
+    build:
+      context: ./checkout-service
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "8001:8001"
+    environment:
+      - DAA_BACKEND_API_URL=http://host.docker.internal:8000
+      - DAA_LOGS_URL=http://host.docker.internal:8000/logs/
+      - PAYMENT_SERVICE_URL=http://payment-service:8002/pay
+      - REDIS_HOST=redis-cache
+      - REDIS_PORT=6379
+      - DAA_TOKEN=${DAA_TOKEN_CHECKOUT}
+      - REPO_NAME=checkout-service
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "gitlab.example.com:host-gateway"
+    depends_on:
+      - redis-cache
+      - payment-service
+
+  payment-service:
+    build:
+      context: ./payment-service
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "8002:8002"
+    environment:
+      - DAA_BACKEND_API_URL=http://host.docker.internal:8000
+      - DAA_LOGS_URL=http://host.docker.internal:8000/logs/
+      - DAA_TOKEN=${DAA_TOKEN_PAYMENT}
+      - REPO_NAME=payment-service
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "gitlab.example.com:host-gateway"

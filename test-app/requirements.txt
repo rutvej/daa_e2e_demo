@@ -1,0 +1,6 @@
+Flask==2.0.2
+requests==2.26.0
+Werkzeug==2.0.0
+gevent==21.12.0
+
+./daa-sdk
