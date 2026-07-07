@@ -37,7 +37,17 @@ def wait_for_service(url: str, name: str, timeout_sec: int = 240):
     raise TimeoutError(f"Service {name} at {url} did not start within {timeout_sec}s")
 
 def ensure_gitlab_token():
-    print("Setting up root personal access token in GitLab container...")
+    print("Checking if GitLab personal access token is already valid...")
+    headers = {"PRIVATE-TOKEN": GITLAB_TOKEN}
+    try:
+        res = requests.get(f"{GITLAB_URL}/api/v4/personal_access_tokens", headers=headers, timeout=5)
+        if res.status_code == 200:
+            print("✓ GitLab token is already valid. Skipping rails runner setup.")
+            return
+    except Exception as e:
+        print(f"Token check failed: {e}")
+
+    print("Setting up root personal access token in GitLab container via rails runner...")
     runner = (
         "begin; "
         "user = User.find_by_username('root'); "
@@ -52,6 +62,7 @@ def ensure_gitlab_token():
     )
     cmd = f"docker-compose exec -T gitlab gitlab-rails runner \"{runner}\""
     run_cmd(cmd, check=True)
+
 
 def push_project_to_gitlab(app_name: str, src_dir: Path):
     headers = {"PRIVATE-TOKEN": GITLAB_TOKEN}
@@ -288,7 +299,7 @@ def register_daa_apps_and_get_tokens():
             json={
                 "app_name": app,
                 "repo_provider": "gitlab",
-                "repo_url": f"http://gitlab:80/root/{app}.git",
+                "repo_url": f"http://gitlab:8082/root/{app}.git",
                 "repo_token": GITLAB_TOKEN,
                 "jira_url": f"{DAA_URL}/mock-jira",
                 "jira_token": "mock-token",

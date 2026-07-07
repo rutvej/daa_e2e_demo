@@ -23,6 +23,40 @@ def report_error_to_daa(exception_type: str, content: str, trace_id: str):
         requests.post(DAA_LOGS_URL, json=payload, headers=headers, timeout=2.0)
     except Exception as e:
         print(f"Failed to report to DAA: {e}")
+DAA_LOGS_URL = os.environ.get("DAA_LOGS_URL")
+DAA_TOKEN = os.environ.get("DAA_TOKEN")
+def report_error_to_daa(exception_type: str, content: str, trace_id: str):
+    if not DAA_LOGS_URL or not DAA_TOKEN:
+        return
+    payload = {
+        "app_name": "checkout-service",
+        "content": content,
+        "exception_type": exception_type,
+        "trace_id": trace_id,
+        "correlation_id": str(uuid.uuid4())
+    }
+    headers = {"Authorization": f"Bearer {DAA_TOKEN}"}
+    try:
+        requests.post(DAA_LOGS_URL, json=payload, headers=headers, timeout=2.0)
+    except Exception as e:
+        print(f"Failed to report to DAA: {e}")
+DAA_LOGS_URL = os.environ.get("DAA_LOGS_URL")
+DAA_TOKEN = os.environ.get("DAA_TOKEN")
+def report_error_to_daa(exception_type: str, content: str, trace_id: str):
+    if not DAA_LOGS_URL or not DAA_TOKEN:
+        return
+    payload = {
+        "app_name": "checkout-service",
+        "content": content,
+        "exception_type": exception_type,
+        "trace_id": trace_id,
+        "correlation_id": str(uuid.uuid4())
+    }
+    headers = {"Authorization": f"Bearer {DAA_TOKEN}"}
+    try:
+        requests.post(DAA_LOGS_URL, json=payload, headers=headers, timeout=2.0)
+    except Exception as e:
+        print(f"Failed to report to DAA: {e}")
 
 PAYMENT_SERVICE_URL = os.environ.get("PAYMENT_SERVICE_URL", "http://localhost:8002/pay")
 REDIS_HOST = os.environ.get("REDIS_HOST", "redis-cache")
