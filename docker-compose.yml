@@ -1,88 +1,116 @@
 version: '3.8'
 
-volumes:
-  gitlab_config:
-  gitlab_logs:
-  gitlab_data:
-
 services:
-  gitlab:
-    image: 'gitlab/gitlab-ce:latest'
-    restart: always
-    hostname: 'gitlab.example.com'
-    environment:
-      GITLAB_OMNIBUS_CONFIG: |
-        external_url 'http://gitlab.example.com'
-        gitlab_rails['initial_root_password'] = "StrongPassword123"
-    ports:
-      - '8082:80'
-      - '8443:443'
-      - '2224:22'
-    volumes:
-      - 'gitlab_config:/etc/gitlab'
-      - 'gitlab_logs:/var/log/gitlab'
-      - 'gitlab_data:/var/opt/gitlab'
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/-/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  redis-cache:
+  # ============ INFRASTRUCTURE ============
+  
+  redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    command: >
+      redis-server
+      --maxmemory 50mb
+      --maxmemory-policy noeviction
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
-  test-app:
-    build:
-      context: ./test-app
-      dockerfile: Dockerfile
-    restart: always
-    ports:
-      - "8081:8081"
+  postgres:
+    image: postgres:15-alpine
     environment:
-      - DAA_BACKEND_API_URL=http://host.docker.internal:8000
-      - DAA_LOGS_URL=http://host.docker.internal:8000/logs/
-      - DAA_TOKEN=${DAA_TOKEN_TEST_APP}
-      - REPO_NAME=test-app
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-      - "gitlab.example.com:host-gateway"
+      POSTGRES_DB: payflow
+      POSTGRES_USER: payflow
+      POSTGRES_PASSWORD: payflow_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
-  checkout-service:
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5673:5672"
+      - "15673:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  gitea:
+    image: gitea/gitea:latest
+    environment:
+      - GITEA__database__DB_TYPE=sqlite3
+      - GITEA__server__ROOT_URL=http://localhost:3000
+      - GITEA__server__HTTP_PORT=3000
+      - GITEA__security__INSTALL_LOCK=true
+      - GITEA__service__DISABLE_REGISTRATION=false
+    ports:
+      - "3000:3000"
+    volumes:
+      - gitea_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/v1/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ============ APPLICATION ============
+
+  payment-api:
     build:
-      context: ./checkout-service
-      dockerfile: Dockerfile
+      context: ./payment-api
     restart: always
     ports:
       - "8001:8001"
     environment:
-      - DAA_BACKEND_API_URL=http://host.docker.internal:8000
-      - DAA_LOGS_URL=http://host.docker.internal:8000/logs/
-      - PAYMENT_SERVICE_URL=http://payment-service:8002/pay
-      - REDIS_HOST=redis-cache
+      - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - DAA_TOKEN=${DAA_TOKEN_CHECKOUT}
-      - REPO_NAME=checkout-service
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-      - "gitlab.example.com:host-gateway"
-    depends_on:
-      - redis-cache
-      - payment-service
-
-  payment-service:
-    build:
-      context: ./payment-service
-      dockerfile: Dockerfile
-    restart: always
-    ports:
-      - "8002:8002"
-    environment:
+      - DATABASE_URL=postgresql://payflow:payflow_secret@postgres/payflow?sslmode=disable
+      - RABBITMQ_HOST=rabbitmq
       - DAA_BACKEND_API_URL=http://host.docker.internal:8000
       - DAA_LOGS_URL=http://host.docker.internal:8000/logs/
-      - DAA_TOKEN=${DAA_TOKEN_PAYMENT}
-      - REPO_NAME=payment-service
+      - DAA_TOKEN=${DAA_TOKEN_PAYMENT_API}
+      - REPO_NAME=payment-api
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
-      - "gitlab.example.com:host-gateway"
+
+  payment-worker:
+    build:
+      context: ./payment-worker
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://payflow:payflow_secret@postgres/payflow?sslmode=disable
+      - RABBITMQ_HOST=rabbitmq
+      - DAA_BACKEND_API_URL=http://host.docker.internal:8000
+      - DAA_TOKEN=${DAA_TOKEN_PAYMENT_WORKER}
+      - REPO_NAME=payment-worker
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pgdata:
+  gitea_data:
