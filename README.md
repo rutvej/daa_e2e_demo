@@ -1,6 +1,6 @@
 # PayFlow Demo — Multi-Language E2E Payment System
 
-This repository implements `daa-e2e-demo`, a realistic multi-language payment system designed to showcase the capabilities of the **Distributed Autonomous Agent (DAA)**. It demonstrates how DAA automatically detects, diagnoses, and remediates system failures (like Redis OOM and cascading queue consumer breaks).
+This repository implements `daa-e2e-demo`, a realistic multi-language payment system designed to showcase the capabilities of the **Debugging Autonomous Agent (DAA)**. It demonstrates how DAA automatically detects, diagnoses, and remediates system failures (like Redis OOM and cascading queue consumer breaks).
 
 ---
 
