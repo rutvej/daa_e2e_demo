@@ -63,6 +63,9 @@ def setup_gitea():
     token = token.split("\n")[-1].strip()
     print(f"✓ Gitea Token: {token[:6]}...")
 
+    # Save to local file for resume support
+    (ROOT_DIR / ".gitea_token").write_text(token)
+
     # Create repos
     for repo in ["payment-api", "payment-worker"]:
         print(f"Creating repository '{repo}' via Gitea API...")
@@ -105,73 +108,70 @@ def register_daa_apps_and_get_tokens(gitea_token: str):
     print("      DAA Initialization & Token Configuration   ")
     print("==================================================")
     
-    # Authenticate SRE Admin
-    admin_payload = {"username": "testuser", "password": "testpassword"}
-    try:
-        requests.post(f"{DAA_URL}/auth/register", json=admin_payload)
-    except Exception:
-        pass
-    res = requests.post(f"{DAA_URL}/auth/login", json=admin_payload)
-    res.raise_for_status()
-    admin_token = res.json().get("access_token") or res.json().get("token")
-    
-    headers = {
-        "Authorization": f"Bearer {admin_token}",
-        "Content-Type": "application/json"
-    }
+    daa_path = os.path.abspath(os.path.join(ROOT_DIR, "../DAA"))
+    python_exe = os.path.join(daa_path, ".venv/bin/python")
+    daa_script = os.path.join(daa_path, "daa")
 
+    # 1. Update Gitea token in ~/.daa/config.json
+    config_path = os.path.expanduser("~/.daa/config.json")
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r") as f:
+                cfg = json.load(f)
+            cfg["GIT_TOKEN"] = gitea_token
+            with open(config_path, "w") as f:
+                json.dump(cfg, f, indent=2)
+            print("✓ Updated Gitea token in DAA configuration.")
+        except Exception as e:
+            print(f"Warning: Failed to update DAA config: {e}")
+
+    # 2. Register applications via CLI
     tokens = {}
     apps = ["payment-api", "payment-worker"]
     for app in apps:
-        print(f"Registering application '{app}' in DAA backend...")
+        print(f"\nRegistering application '{app}' via DAA CLI...")
         lang = "python" if app == "payment-api" else "go"
-        app_payload = {
-            "name": app,
-            "description": f"Microservice {app}",
-            "language": lang,
-            "allowed_ip": "172.22.0.1" # Host gateway IP
-        }
-        res_create = requests.post(f"{DAA_URL}/applications/", json=app_payload, headers=headers)
-        if res_create.status_code == 400 and "already exists" in res_create.text:
-            # Fetch application token
-            res_list = requests.get(f"{DAA_URL}/applications/", headers=headers)
-            res_list.raise_for_status()
-            app_data = next(a for a in res_list.json() if a["name"] == app)
-        else:
-            res_create.raise_for_status()
-            app_data = res_create.json()
-            
-        app_token = app_data["token"]
-        tokens[app] = app_token
-        print(f"✓ Registered '{app}'! Token: {app_token[:25]}...")
+        repo_url = f"http://host.docker.internal:3000/{GITEA_USER}/{app}.git"
+        
+        # Run: daa register --name app --repo-url repo_url --language lang
+        cmd_register = [
+            python_exe,
+            daa_script,
+            "register",
+            "--name", app,
+            "--repo-url", repo_url,
+            "--language", lang
+        ]
+        try:
+            res = subprocess.run(cmd_register, capture_output=True, text=True, check=True)
+            # Extract DAA_TOKEN from stdout
+            match = re.search(r"DAA_TOKEN=([a-zA-Z0-9_\-\.]+)", res.stdout)
+            if match:
+                app_token = match.group(1)
+                tokens[app] = app_token
+                print(f"✓ Registered '{app}'! Token: {app_token[:25]}...")
+            else:
+                raise RuntimeError(f"Could not extract DAA_TOKEN from DAA CLI output:\n{res.stdout}")
+        except subprocess.CalledProcessError as e:
+            print(f"Error registering app via CLI: {e.stderr}")
+            raise e
 
-        # Create Escalation Policy (Threshold = 3 errors in 60s)
-        requests.post(
-            f"{DAA_URL}/applications/{app_data['id']}/escalation-policies",
-            headers=headers,
-            json={
-                "rule_type": "error_rate_threshold",
-                "condition_value": 3,
-                "window_seconds": 60,
-                "cooldown_minutes": 30,
-                "severity_keywords": ["FATAL", "OOMKill", "RedisConnectionError", "ConnectionRefusedError"]
-            }
-        )
-
-        # Register Project Connection
-        requests.post(
-            f"{DAA_URL}/projects/",
-            headers=headers,
-            json={
-                "app_name": app,
-                "repo_provider": "gitea",
-                "repo_url": f"http://host.docker.internal:3000/{GITEA_USER}/{app}.git",
-                "repo_token": gitea_token,
-                "jira_url": f"{DAA_URL}/mock-jira",
-                "jira_token": "mock-token",
-                "jira_project_key": "MOCK"
-            }
-        )
+        # 3. Configure Escalation Policy via CLI (Threshold = 3 errors in 60s)
+        print(f"Setting escalation policy for '{app}' via DAA CLI...")
+        cmd_policy = [
+            python_exe,
+            daa_script,
+            "policy",
+            "--app", app,
+            "--threshold", "3",
+            "--window", "60"
+        ]
+        try:
+            subprocess.run(cmd_policy, check=True)
+            print(f"✓ Set escalation policy for '{app}' successfully.")
+        except subprocess.CalledProcessError as e:
+            print(f"Error setting policy via CLI: {e.stderr}")
+            raise e
 
     # Write tokens to .env file for Docker Compose
     env_content = (
@@ -196,17 +196,7 @@ def register_daa_apps_and_get_tokens(gitea_token: str):
             pass
         time.sleep(2)
 
-def trigger_outage_and_verify(gitea_token: str):
-    print("\n==================================================")
-    print("      Simulating Outage & Verifying Resolution    ")
-    print("==================================================")
-
-    # Trigger failure
-    print("Triggering Redis OOM failure on payment-api via load test...")
-    run_cmd("./load_test.sh", check=False)
-
-    print("Failure triggered! Monitoring DAA backend for generated incident and fix...")
-    
+def poll_approve_verify(gitea_token: str):
     # Login as admin to poll fixes
     admin_payload = {"username": "testuser", "password": "testpassword"}
     res = requests.post(f"{DAA_URL}/auth/login", json=admin_payload)
@@ -289,33 +279,89 @@ def trigger_outage_and_verify(gitea_token: str):
     print("✗ No Pull Request found on Gitea.")
     sys.exit(1)
 
+def trigger_outage_and_verify(gitea_token: str):
+    print("\n==================================================")
+    print("      Simulating Outage & Verifying Resolution    ")
+    print("==================================================")
+
+    # Trigger failure
+    print("Triggering Redis OOM failure on payment-api via load test...")
+    run_cmd("./load_test.sh", check=False)
+
+    print("Failure triggered! Monitoring DAA backend for generated incident and fix...")
+    poll_approve_verify(gitea_token)
+
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="E2E DAA Walkthrough Orchestrator")
+    parser.add_argument("--skip-infra", action="store_true", help="Skip Gitea/Redis/Postgres/RabbitMQ startup")
+    parser.add_argument("--skip-registration", action="store_true", help="Skip app registration & token write")
+    parser.add_argument("--skip-load-test", action="store_true", help="Skip load test, use inject instead")
+    parser.add_argument("--watch-only", action="store_true", help="Just poll for existing fix")
+    args = parser.parse_args()
+
+    if args.watch_only:
+        args.skip_infra = True
+        args.skip_registration = True
+        args.skip_load_test = True
+
     print("Starting E2E DAA Walkthrough Orchestrator...")
     
+    gitea_token = None
+    token_file = ROOT_DIR / ".gitea_token"
+    if token_file.exists():
+        gitea_token = token_file.read_text().strip()
+
     # 1. Spin up Gitea, Redis, and clean apps
-    print("Starting Infrastructure (Gitea, Redis, Postgres, RabbitMQ)...")
-    run_cmd("docker-compose up -d --build gitea redis postgres rabbitmq")
-    
-    # 2. Wait for Gitea to be healthy
-    wait_for_service(f"{GITEA_URL}/api/v1/version", "Gitea")
-    gitea_token = setup_gitea()
+    if not args.skip_infra:
+        print("Starting Infrastructure (Gitea, Redis, Postgres, RabbitMQ)...")
+        run_cmd("docker-compose up -d --build gitea redis postgres rabbitmq")
+        
+        # 2. Wait for Gitea to be healthy
+        wait_for_service(f"{GITEA_URL}/api/v1/version", "Gitea")
+        gitea_token = setup_gitea()
 
-    # 3. Push code to Gitea repositories
-    push_project_to_gitea("payment-api", ROOT_DIR / "payment-api")
-    push_project_to_gitea("payment-worker", ROOT_DIR / "payment-worker")
+        # 3. Push code to Gitea repositories
+        push_project_to_gitea("payment-api", ROOT_DIR / "payment-api")
+        push_project_to_gitea("payment-worker", ROOT_DIR / "payment-worker")
 
-    # 4. Spin up the apps now that repos are populated
-    print("Starting application containers...")
-    run_cmd("docker-compose up -d --build payment-api payment-worker")
+        # 4. Spin up the apps now that repos are populated
+        print("Starting application containers...")
+        run_cmd("docker-compose up -d --build payment-api payment-worker")
 
-    # 5. Wait for DAA backend and apps
-    wait_for_service(DAA_URL, "DAA Backend API")
-    wait_for_service("http://localhost:8001/health", "payment-api")
-    
-    register_daa_apps_and_get_tokens(gitea_token)
+        # 5. Wait for DAA backend and apps
+        wait_for_service(DAA_URL, "DAA Backend API")
+        wait_for_service("http://localhost:8001/health", "payment-api")
+    else:
+        print("Skipping Infrastructure Setup.")
+
+    if not args.skip_registration:
+        if not gitea_token:
+            if token_file.exists():
+                gitea_token = token_file.read_text().strip()
+            else:
+                print("Warning: Gitea token file not found. Setting up Gitea to generate one...")
+                gitea_token = setup_gitea()
+        register_daa_apps_and_get_tokens(gitea_token)
+    else:
+        print("Skipping Application Registration in DAA.")
+        if not gitea_token and token_file.exists():
+            gitea_token = token_file.read_text().strip()
 
     # 6. Trigger failure and verify
-    trigger_outage_and_verify(gitea_token)
+    if args.watch_only:
+        print("Watch-only mode active. Monitoring DAA backend for existing/proposed fixes...")
+        poll_approve_verify(gitea_token)
+    elif args.skip_load_test:
+        print("Skipping load test. Calling direct incident injection...")
+        # Purge queue first
+        run_cmd("docker exec daa-e2e-demo-rabbitmq-1 rabbitmqctl purge_queue fix_jobs 2>/dev/null || true", check=False)
+        # Run inject_incident.sh
+        run_cmd("./inject_incident.sh", check=True)
+        print("Incident injected! Monitoring DAA backend for generated incident and fix...")
+        poll_approve_verify(gitea_token)
+    else:
+        trigger_outage_and_verify(gitea_token)
 
 if __name__ == "__main__":
     main()
