@@ -47,33 +47,48 @@ Start the infrastructure and push the microservice repositories to Gitea:
 ```
 *Take note of the Git Token generated and printed by the script (or retrieve it from `.gitea_token`).*
 
-### 2. Configure the DAA CLI
-Navigate to the DAA workspace directory, initialize your configuration, and point it to the local Gitea instance:
+### 2. Install and Initialize DAA SRE Platform
+Navigate to the DAA workspace directory, run the unified installation script, symlink the CLI globally, and run the configuration wizard:
 ```bash
+# Navigate to DAA workspace
 cd ../DAA
-./daa init
+
+# Install DAA, set up virtual env and packages
+./install.sh
+
+# Link the DAA CLI globally
+sudo ln -sf $(pwd)/daa /usr/local/bin/daa
+
+# Run the guided setup wizard to connect Git, LLM, etc.
+daa init
 ```
 - Select **Gitea** as the Git provider.
 - Provide the Git URL (`http://localhost:3000`) and the generated Git Token.
-- Enter your Gemini API key and select your preferred active model (e.g. `gemini-2.0-flash`, `gemma-4-31b-it`).
+- Enter your Gemini API key (e.g. `AIzaSyYourGeminiApiKeyHere`) and select your preferred active model (e.g. `gemini-1.5-flash`).
 - Cloud Logging credentials (AWS, GCP, Datadog) can be skipped for local development.
 
-### 3. Register the Applications via DAA CLI
-Register the microservices and obtain their telemetry tokens:
+### 3. Deploy DAA Services
+Rebuild and launch the DAA backend and agent services in Docker:
 ```bash
-./daa register --name payment-api --repo-url http://host.docker.internal:3000/daa-admin/payment-api.git --language python
-./daa register --name payment-worker --repo-url http://host.docker.internal:3000/daa-admin/payment-worker.git --language go
+daa redeploy
 ```
 
-### 4. Configure Escalation Policies
+### 4. Register the Applications via DAA CLI
+Register the microservices and obtain their telemetry tokens (you can run this from any directory now):
+```bash
+daa register --name payment-api --repo-url http://host.docker.internal:3000/daa-admin/payment-api.git --language python
+daa register --name payment-worker --repo-url http://host.docker.internal:3000/daa-admin/payment-worker.git --language go
+```
+
+### 5. Configure Escalation Policies
 Set up SRE escalation rules for the registered applications using the CLI:
 ```bash
-./daa policy --app payment-api --threshold 3 --window 60
-./daa policy --app payment-worker --threshold 3 --window 60
+daa policy --app payment-api --threshold 3 --window 60
+daa policy --app payment-worker --threshold 3 --window 60
 ```
 *(This triggers an SRE agent run if more than 3 errors are recorded within a 60-second window).*
 
-### 5. Inject Telemetry Tokens & Deploy
+### 6. Inject Telemetry Tokens & Deploy
 Save the returned `DAA_TOKEN`s inside the demo's `.env` file:
 ```bash
 # In daa-e2e-demo/.env
@@ -85,7 +100,7 @@ Deploy the microservice containers:
 docker-compose up -d --build payment-api payment-worker
 ```
 
-### 6. Simulate the Outage
+### 7. Simulate the Outage
 Trigger the outage by flooding the cache:
 ```bash
 ./load_test.sh
