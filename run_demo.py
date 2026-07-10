@@ -125,6 +125,35 @@ def register_daa_apps_and_get_tokens(gitea_token: str):
         except Exception as e:
             print(f"Warning: Failed to update DAA config: {e}")
 
+    # Check stateless mode
+    is_stateless = False
+    daa_env_path = os.path.join(daa_path, ".env")
+    if os.path.exists(daa_env_path):
+        try:
+            with open(daa_env_path, "r") as f:
+                content = f.read()
+                if "DAA_DB_PROVIDER=none" in content:
+                    is_stateless = True
+        except Exception:
+            pass
+
+    if is_stateless:
+        print("\n→ DAA is running in Stateless Mode (no DB). Bypassing application registration & policies.")
+        tokens = {"payment-api": "stateless_dummy_token", "payment-worker": "stateless_dummy_token"}
+        
+        # Write tokens to .env file for Docker Compose
+        env_content = (
+            f"DAA_TOKEN_PAYMENT_API={tokens['payment-api']}\n"
+            f"DAA_TOKEN_PAYMENT_WORKER={tokens['payment-worker']}\n"
+        )
+        (ROOT_DIR / ".env").write_text(env_content)
+        print("✓ Wrote application tokens to .env file.")
+        
+        # Recreate containers to load tokens
+        print("Recreating containers with application tokens...")
+        run_cmd("docker-compose up -d --force-recreate payment-api payment-worker")
+        return
+
     # 2. Register applications via CLI
     tokens = {}
     apps = ["payment-api", "payment-worker"]
@@ -196,6 +225,35 @@ def register_daa_apps_and_get_tokens(gitea_token: str):
             pass
         time.sleep(2)
 
+def check_agent_logs():
+    res = subprocess.run("docker logs daa-python-agent-1", shell=True, capture_output=True, text=True)
+    logs = res.stdout + "\n" + res.stderr
+    
+    if "Traceback (most recent call last):" in logs:
+        ignore_keywords = [
+            "iteration limit exceeded", 
+            "max_iterations", 
+            "OutputParserException",
+            "Agent stopped due to iteration limit",
+            "AgentStoppedException"
+        ]
+        
+        has_error = False
+        tb_blocks = logs.split("Traceback (most recent call last):")
+        for block in tb_blocks[1:]:
+            is_ignored = any(kw in block for kw in ignore_keywords)
+            # Only trigger if it is an internal DAA agent error (files in DAA's /app/src/ directory)
+            is_internal_daa = "/app/src/" in block
+            if is_internal_daa and not is_ignored:
+                has_error = True
+                print("\n[CRITICAL ERROR DETECTED IN DAA AGENT LOGS]")
+                print("Traceback (most recent call last):\n" + block[:1200] + "\n...")
+                break
+                
+        if has_error:
+            print("Stopping the agent walkthrough for debugging.")
+            sys.exit(1)
+
 def poll_approve_verify(gitea_token: str):
     # Login as admin to poll fixes
     admin_payload = {"username": "testuser", "password": "testpassword"}
@@ -208,6 +266,7 @@ def poll_approve_verify(gitea_token: str):
     fix_id = None
     incident_id = None
     for poll_idx in range(360):
+        check_agent_logs()
         try:
             res_inc = requests.get(f"{DAA_URL}/incidents/", headers=headers, timeout=10)
             if res_inc.ok and res_inc.json():
