@@ -112,18 +112,16 @@ def register_daa_apps_and_get_tokens(gitea_token: str):
     python_exe = os.path.join(daa_path, ".venv/bin/python")
     daa_script = os.path.join(daa_path, "daa")
 
-    # 1. Update Gitea token in ~/.daa/config.json
-    config_path = os.path.expanduser("~/.daa/config.json")
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r") as f:
-                cfg = json.load(f)
-            cfg["GIT_TOKEN"] = gitea_token
-            with open(config_path, "w") as f:
-                json.dump(cfg, f, indent=2)
-            print("✓ Updated Gitea token in DAA configuration.")
-        except Exception as e:
-            print(f"Warning: Failed to update DAA config: {e}")
+    # 1. Update Gitea token in DAA using CLI
+    try:
+        subprocess.run([python_exe, daa_script, "config", "set-git", "--provider", "gitea", "--token", gitea_token], cwd=daa_path, check=True)
+        print("✓ Updated Gitea token via DAA CLI.")
+        
+        # Redeploy DAA to apply the new token to .env inside containers
+        print("Redeploying DAA to apply Git token...")
+        subprocess.run([python_exe, daa_script, "redeploy"], cwd=daa_path, check=True)
+    except Exception as e:
+        print(f"Warning: Failed to update DAA config via CLI: {e}")
 
     # Check stateless mode
     is_stateless = False
@@ -172,7 +170,7 @@ def register_daa_apps_and_get_tokens(gitea_token: str):
             "--language", lang
         ]
         try:
-            res = subprocess.run(cmd_register, capture_output=True, text=True, check=True)
+            res = subprocess.run(cmd_register, cwd=daa_path, capture_output=True, text=True, check=True)
             # Extract DAA_TOKEN from stdout
             match = re.search(r"DAA_TOKEN=([a-zA-Z0-9_\-\.]+)", res.stdout)
             if match:
@@ -242,8 +240,8 @@ def check_agent_logs():
         tb_blocks = logs.split("Traceback (most recent call last):")
         for block in tb_blocks[1:]:
             is_ignored = any(kw in block for kw in ignore_keywords)
-            # Only trigger if it is an internal DAA agent error (files in DAA's /app/src/ directory)
-            is_internal_daa = "/app/src/" in block
+            # Only trigger if it is an internal DAA agent error (files in DAA's /app/agent_src/ or /app/src/ directory)
+            is_internal_daa = "/app/src/" in block or "/app/agent_src/" in block
             if is_internal_daa and not is_ignored:
                 has_error = True
                 print("\n[CRITICAL ERROR DETECTED IN DAA AGENT LOGS]")
@@ -292,6 +290,10 @@ def poll_approve_verify(gitea_token: str):
                 if res_inc_detail.ok:
                     inc_detail = res_inc_detail.json()
                     fid = inc_detail.get("fix_id")
+                    if not fid:
+                        by_log_res = requests.get(f"{DAA_URL}/fixes/by-log/{incident_id}", headers=headers, timeout=10)
+                        if by_log_res.ok:
+                            fid = by_log_res.json().get("id")
                     if fid:
                         fix_res = requests.get(f"{DAA_URL}/fixes/{fid}", headers=headers, timeout=10)
                         if fix_res.ok:
